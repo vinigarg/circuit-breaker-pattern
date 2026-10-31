@@ -14,14 +14,14 @@ const (
 	HalfOpen
 )
 
-type CircuitBreaker interface {
-	Execute[T any](b *Breaker, fn func() (T, error)) (T, error)
+type Breaker interface {
+	Execute(fn func() (any, error)) (any, error)
 	State() State
 }
 
 var ErrCircuitOpen = errors.New("Circuit is in Open State.")
 
-type Config struct {
+type Settings struct {
 	Name string
 
 	FailureRatio     float64       // trip when failures/total >= this (e.g. 0.5)
@@ -33,9 +33,9 @@ type Config struct {
 	OnStateChange    func(name string, from, to State)
 }
 
-type Breaker struct {
-	mu  sync.Mutex
-	cfg Config
+type CircuitBreaker struct {
+	mu sync.Mutex
+	s  Settings
 
 	state  State
 	gen    uint64    // bumps on every state change / window reset
@@ -45,22 +45,22 @@ type Breaker struct {
 	halfInFlight, halfOK int // half-open counters
 }
 
-func New(cfg Config) *Breaker {
-	if cfg.IsFailure == nil {
-		cfg.IsFailure = func(err error) bool { return err != nil }
+func New(s Settings) *CircuitBreaker {
+	if s.IsFailure == nil {
+		s.IsFailure = func(err error) bool { return err != nil }
 	}
-	if cfg.OnStateChange == nil {
+	if s.OnStateChange == nil {
 		// emit metrics/logs here
 	}
-	if cfg.HalfOpenMaxProbe < 1 {
-		cfg.HalfOpenMaxProbe = 1
+	if s.HalfOpenMaxProbe < 1 {
+		s.HalfOpenMaxProbe = 1
 	}
-	b := &Breaker{cfg: cfg}
+	b := &CircuitBreaker{s: s}
 	b.transition(Closed, time.Now())
 	return b
 }
 
-func (b *Breaker) Execute[T any](req func() (T, error)) (T, error) {
+func (b *CircuitBreaker) Execute(req func() (any, error)) (any, error) {
 	gen, err := b.before()
 	if err != nil {
 		return nil, err
@@ -74,12 +74,12 @@ func (b *Breaker) Execute[T any](req func() (T, error)) (T, error) {
 		}
 	}()
 
-	res, err = req()
-	b.after(gen, !b.cfg.IsFailure(err))
+	res, err := req()
+	b.after(gen, !b.s.IsFailure(err))
 	return res, err
 }
 
-func (b *Breaker) before() (uint64, error) {
+func (b *CircuitBreaker) before() (uint64, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	now := time.Now()
@@ -100,7 +100,7 @@ func (b *Breaker) before() (uint64, error) {
 	case Open:
 		return 0, ErrCircuitOpen
 	case HalfOpen:
-		if b.halfInFlight >= b.cfg.HalfOpenMaxProbe {
+		if b.halfInFlight >= b.s.HalfOpenMaxProbe {
 			return 0, ErrCircuitOpen // probe slots are taken
 		}
 		b.halfInFlight++
@@ -108,7 +108,7 @@ func (b *Breaker) before() (uint64, error) {
 	return b.gen, nil
 }
 
-func (b *Breaker) after(gen uint64, success bool) {
+func (b *CircuitBreaker) after(gen uint64, success bool) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
@@ -123,8 +123,8 @@ func (b *Breaker) after(gen uint64, success bool) {
 		if !success {
 			b.failures++
 		}
-		if b.total >= b.cfg.MinRequests &&
-			float64(b.failures)/float64(b.total) >= b.cfg.FailureRatio {
+		if b.total >= b.s.MinRequests &&
+			float64(b.failures)/float64(b.total) >= b.s.FailureRatio {
 			b.transition(Open, now)
 		}
 	case HalfOpen:
@@ -134,31 +134,31 @@ func (b *Breaker) after(gen uint64, success bool) {
 			return
 		}
 		b.halfOK++
-		if b.halfOK >= b.cfg.HalfOpenMaxProbe {
+		if b.halfOK >= b.s.HalfOpenMaxProbe {
 			b.transition(Closed, now)
 		}
 	}
 }
 
-func (b *Breaker) transition(to State, now time.Time) {
+func (b *CircuitBreaker) transition(to State, now time.Time) {
 	b.state = to
 	b.gen++
 	b.total, b.failures, b.halfInFlight, b.halfOK = 0, 0, 0, 0
 
 	switch to {
 	case Closed:
-		if b.cfg.Interval > 0 {
-			b.expiry = now.Add(b.cfg.Interval)
+		if b.s.Interval > 0 {
+			b.expiry = now.Add(b.s.Interval)
 		} else {
 			b.expiry = time.Time{}
 		}
 	case Open:
-		b.expiry = now.Add(b.cfg.OpenTimeout)
+		b.expiry = now.Add(b.s.OpenTimeout)
 	}
 	// Hook: emit metrics/logs on every transition here.
 }
 
-func (b *Breaker) State() State {
+func (b *CircuitBreaker) State() State {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return b.state

@@ -35,7 +35,7 @@ func isClientError(err error) bool {
 }
 
 var cb *gobreaker.CircuitBreaker
-var customCB *breaker.Breaker
+var customCB *breaker.CircuitBreaker
 
 func init() {
 	cb = gobreaker.NewCircuitBreaker(gobreaker.Settings{
@@ -51,7 +51,7 @@ func init() {
 			return err == nil || isClientError(err)
 		},
 	})
-	customCB = breaker.New(breaker.Config{
+	customCB = breaker.New(breaker.Settings{
 		Name:             "circuit-breaker",
 		FailureRatio:     0.5,
 		MinRequests:      3,
@@ -85,7 +85,7 @@ func Get(url string) ([]byte, error) {
 }
 
 func GetCustomCB(url string) ([]byte, error) {
-	body, err := customCB.Execute(func() (interface{}, error) {
+	body, err := customCB.Execute(func() (any, error) {
 		resp, err := http.Get(url)
 		if err != nil {
 			return nil, err

@@ -21,7 +21,7 @@ Typical transitions:
 
 ## Architecture
 
-![Circuit breaker architecture](./image.png)
+![Circuit breaker architecture](./docs/image.png)
 
 ## Design considerations
 
